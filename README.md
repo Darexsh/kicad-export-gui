@@ -5,7 +5,7 @@
 🧰 KiCad Export Studio
 ======================
 
-**A focused desktop GUI for rendering KiCad PCB images via `kicad-cli pcb render` with repeatable settings**  
+**A desktop GUI for exporting KiCad PCB images, schematics, and layout PDFs via `kicad-cli` with repeatable settings**  
 🖼️🧩⚙️
 
 ![Projekt-Status](https://img.shields.io/badge/Status-Aktiv-brightgreen) ![License](https://img.shields.io/badge/License-NonCommercial-blue) ![Version](https://img.shields.io/badge/Version-1.0-orange) [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/darexsh)
@@ -27,7 +27,7 @@
 🚀 About the Project
 --------------------
 
-A lightweight GUI for **KiCad 9+** that helps export consistent board renders without retyping long CLI commands. Select a `.kicad_pcb`, choose resolution and render options, and output top/bottom images quickly.
+A lightweight GUI for **KiCad 9+** that exports consistent outputs without retyping long CLI commands. Select a `.kicad_pro`, choose render options, export PCB images, schematic PDFs, and combined layout layer PDFs.
 
 * * *
 
@@ -38,11 +38,19 @@ A lightweight GUI for **KiCad 9+** that helps export consistent board renders wi
     
 2. Install **KiCad 9+** so `kicad-cli` is available.
     
-3. Run the app:
+3. Install Python dependencies:
+    
+```bash
+pip install -r requirements.txt
+```
+    
+4. Run the app:
     
 ```bash
 python kicad_export_gui.py
 ```
+
+*Windows users:* you can also download a prebuilt `.exe` from the **Releases** page, or build it yourself (see below).
 
 * * *
 
@@ -53,7 +61,11 @@ python kicad_export_gui.py
     
     * Python 3.x
         
+    * wxPython (see `requirements.txt`)
+        
     * KiCad 9+ (for `kicad-cli`)
+        
+    * Poppler (`pdfunite`) for layout PDF combine (Windows: install Poppler and add to PATH)
         
 2. **Configure KiCad command path (Windows)**
     
@@ -63,9 +75,9 @@ python kicad_export_gui.py
     
     * Run `python kicad_export_gui.py`
         
-    * Select a `.kicad_pcb` board file and output folder
+    * Select a `.kicad_pro` project file and output folder
         
-    * Click **Render Image**
+    * Use the tabs to export PCB images, schematics, and layout PDFs
         
 
 * * *
@@ -73,25 +85,17 @@ python kicad_export_gui.py
 ⚙️ Features
 -----------
 
-* **Resolution presets:** 720p, 1080p, 2k, 4k, with editable width/height
+* **Project-based workflow:** select a `.kicad_pro` and auto-detect related files
     
-* **Render sides:** top, bottom, left, right, front, back, or top + bottom
+* **PCB Images Export:** render sides (top/bottom/left/right/front/back), backgrounds, quality, advanced camera + lighting
     
-* **Backgrounds:** default, transparent, opaque
+* **Schematic Export:** one-click schematic PDF export
     
-* **Quality presets:** basic, high, user
+* **Layout Export:** export PCB layer PDFs and combine into one document (via `pdfunite`)
     
-* **Advanced controls:**
+* **Layer selection:** change which layers are exported and combined
     
-    * Floor and perspective toggles
-        
-    * Presets: follow PCB editor / plot settings / legacy
-        
-    * Zoom, pan, pivot, and rotate inputs
-        
-    * Lighting controls (top, bottom, side, camera, side elevation)
-        
-* **Progress + log output** during rendering
+* **Progress + log output** during exports
 
 * * *
 
@@ -102,7 +106,24 @@ python kicad_export_gui.py
     
 * Output files are named by side, e.g. `top.png` and `bottom.png`
     
+* Layout export uses `pdfunite` to combine layer PDFs into `Project_board_layers.pdf`
+    
 * Works best on the latest KiCad 9+ builds
+
+* **Build a Windows .exe (optional)**  
+  From repo root (CMD):
+  ```bash
+  pyinstaller --onefile --name kicad_export_studio --noconsole ^
+    --add-data "src\\icons;src\\icons" ^
+    src\\kicad_export_gui.py
+  ```
+  From `src` folder:
+  ```bash
+  pyinstaller --onefile --name kicad_export_studio --noconsole ^
+    --add-data "icons;icons" ^
+    kicad_export_gui.py
+  ```
+  The output is in `dist\\kicad_export_studio.exe`.
 
 * **Commercial use is not permitted**. You may use, modify, and distribute this project only for non-commercial purposes.
     

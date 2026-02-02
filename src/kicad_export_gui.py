@@ -2,11 +2,13 @@ import os
 import queue
 import re
 import subprocess
+import shutil
 import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+import wx
 
 from render_command import build_cmd_exe_command, build_kicad_cli_command
+from gui_tabs import TabsBuilder
 from ui_constants import (
     APP_BG,
     BACKGROUND_OPTIONS,
@@ -15,571 +17,491 @@ from ui_constants import (
     BUTTON_TEXT,
     CARD_BG,
     KICAD_CMD_DEFAULT,
-    LISTBOX_SELECT,
     PRESET_OPTIONS,
-    PROGRESS_BORDER,
     PROGRESS_GREEN,
     PROGRESS_GREEN_DARK,
     QUALITY_OPTIONS,
     RESOLUTION_MAP,
     RESOLUTION_OPTIONS,
     SIDE_OPTIONS,
-    TEXT_DISABLED,
     TEXT_MUTED,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
 )
-from ui_helpers import bind_mousewheel
 
 
-class KiCadExportGUI(tk.Tk):
+def _hex_to_rgb(value):
+    value = value.lstrip("#")
+    return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
+
+
+class KiCadExportFrame(wx.Frame):
     def __init__(self):
-        super().__init__()
-        self.title("KiCad Export Studio")
-        self.geometry("860x600")
-        self.resizable(False, False)
+        super().__init__(None, title="KiCad Export Studio", size=(1000, 680))
+        self.SetMinSize((1000, 680))
+        self.SetMaxSize((1000, 680))
 
-        self.board_var = tk.StringVar()
-        self.output_var = tk.StringVar()
-        self.width_var = tk.StringVar(value="1920")
-        self.height_var = tk.StringVar(value="1080")
-        self.resolution_var = tk.StringVar(value=RESOLUTION_OPTIONS[1])
-        self.side_var = tk.StringVar(value="top + bottom")
-        self.background_var = tk.StringVar(value="transparent")
-        self.quality_var = tk.StringVar(value="high")
-        self.preset_var = tk.StringVar(value="")
-        self.floor_var = tk.BooleanVar(value=False)
-        self.perspective_var = tk.BooleanVar(value=False)
-        self.zoom_var = tk.StringVar()
-        self.pan_var = tk.StringVar()
-        self.pivot_var = tk.StringVar()
-        self.rotate_var = tk.StringVar()
-        self.light_top_var = tk.StringVar()
-        self.light_bottom_var = tk.StringVar()
-        self.light_side_var = tk.StringVar()
-        self.light_camera_var = tk.StringVar()
-        self.light_side_elevation_var = tk.StringVar()
-        self.status_var = tk.StringVar(value="Ready.")
-        self.show_log_var = tk.BooleanVar(value=False)
-        self.show_advanced_var = tk.BooleanVar(value=False)
         self.log_queue = queue.Queue()
         self.render_in_progress = False
+        self.current_action_label = "Render"
+        self.layer_aliases = {
+            "F.SilkS": "F.Silkscreen",
+            "B.SilkS": "B.Silkscreen",
+        }
+        self.layer_aliases_reverse = {v: k for k, v in self.layer_aliases.items()}
+        self.layer_order = [
+            "F.Cu",
+            "B.Cu",
+            "F.Adhesive",
+            "B.Adhesive",
+            "F.Paste",
+            "B.Paste",
+            "F.Silkscreen",
+            "B.Silkscreen",
+            "F.Mask",
+            "B.Mask",
+            "User.Drawings",
+            "User.Comments",
+            "User.Eco1",
+            "User.Eco2",
+            "Edge.Cuts",
+            "Margin",
+            "F.Courtyard",
+            "B.Courtyard",
+            "F.Fab",
+            "B.Fab",
+            "User.1",
+            "User.2",
+            "User.3",
+            "User.4",
+            "User.5",
+            "User.6",
+            "User.7",
+            "User.8",
+            "User.9",
+        ]
+        self.extra_layers = [
+            "F.Adhesive",
+            "B.Adhesive",
+            "F.Paste",
+            "B.Paste",
+            "F.Silkscreen",
+            "B.Silkscreen",
+            "F.Mask",
+            "B.Mask",
+            "User.Drawings",
+            "User.Comments",
+            "User.Eco1",
+            "User.Eco2",
+            "Edge.Cuts",
+            "Margin",
+            "F.Courtyard",
+            "B.Courtyard",
+            "F.Fab",
+            "B.Fab",
+            "User.1",
+            "User.2",
+            "User.3",
+            "User.4",
+            "User.5",
+            "User.6",
+            "User.7",
+            "User.8",
+            "User.9",
+        ]
+        self.detected_layers = []
+        self.selected_layers = []
 
-        self._configure_style()
+        self._init_colors()
+        self._init_fonts()
         self._build_ui()
-        self._poll_log_queue()
+        self._bind_events()
 
-    def _configure_style(self):
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        self.configure(bg=APP_BG)
-        style.configure(
-            "App.TFrame",
-            background=APP_BG,
-        )
-        style.configure(
-            "Card.TFrame",
-            background=CARD_BG,
-            relief="flat",
-        )
-        style.configure(
-            "Header.TLabel",
-            background=APP_BG,
-            foreground=TEXT_PRIMARY,
-            font=("Segoe UI", 16, "bold"),
-        )
-        style.configure(
-            "Sub.TLabel",
-            background=APP_BG,
-            foreground=TEXT_MUTED,
-            font=("Segoe UI", 10),
-        )
-        style.configure(
-            "CardSub.TLabel",
-            background=CARD_BG,
-            foreground=TEXT_SECONDARY,
-            font=("Segoe UI", 10),
-        )
-        style.configure(
-            "Hint.TLabel",
-            background=CARD_BG,
-            foreground=TEXT_MUTED,
-            font=("Segoe UI", 9),
-        )
-        style.configure(
-            "Label.TLabel",
-            background=CARD_BG,
-            foreground=TEXT_SECONDARY,
-            font=("Segoe UI", 10),
-        )
-        style.configure(
-            "HeaderCard.TLabel",
-            background=CARD_BG,
-            foreground=TEXT_PRIMARY,
-            font=("Segoe UI", 11, "bold"),
-        )
-        style.configure(
-            "Status.TLabel",
-            background=APP_BG,
-            foreground=TEXT_MUTED,
-            font=("Segoe UI", 9),
-        )
-        style.configure(
-            "Primary.TButton",
-            padding=(14, 8),
-            font=("Segoe UI", 10, "bold"),
-        )
-        style.configure(
-            "TButton",
-            background=BUTTON_BG,
-            foreground=BUTTON_TEXT,
-            padding=(10, 6),
-        )
-        style.configure(
-            "TEntry",
-            padding=6,
-            fieldbackground=CARD_BG,
-            foreground=TEXT_PRIMARY,
-        )
-        style.configure(
-            "TCombobox",
-            padding=4,
-            fieldbackground=CARD_BG,
-            foreground=TEXT_PRIMARY,
-            arrowsize=14,
-            arrowcolor=TEXT_SECONDARY,
-        )
-        style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", CARD_BG), ("!disabled", CARD_BG)],
-            foreground=[("readonly", TEXT_PRIMARY), ("!disabled", TEXT_PRIMARY)],
-            background=[("readonly", CARD_BG), ("!disabled", CARD_BG)],
-            arrowcolor=[("active", TEXT_PRIMARY), ("!disabled", TEXT_SECONDARY)],
-        )
-        self.option_add("*TCombobox*Listbox.background", CARD_BG)
-        self.option_add("*TCombobox*Listbox.foreground", TEXT_PRIMARY)
-        self.option_add("*TCombobox*Listbox.selectBackground", LISTBOX_SELECT)
-        self.option_add("*TCombobox*Listbox.selectForeground", TEXT_PRIMARY)
-        self.option_add("*Listbox.background", CARD_BG)
-        self.option_add("*Listbox.foreground", TEXT_PRIMARY)
-        self.option_add("*Listbox.selectBackground", LISTBOX_SELECT)
-        self.option_add("*Listbox.selectForeground", TEXT_PRIMARY)
-        style.map(
-            "TButton",
-            background=[("active", BUTTON_HOVER)],
-            foreground=[("active", BUTTON_TEXT), ("disabled", TEXT_DISABLED)],
-        )
-        style.configure(
-            "Green.Horizontal.TProgressbar",
-            troughcolor=CARD_BG,
-            background=PROGRESS_GREEN,
-            bordercolor=PROGRESS_BORDER,
-            lightcolor=PROGRESS_GREEN,
-            darkcolor=PROGRESS_GREEN_DARK,
-        )
-        style.configure(
-            "Small.TCheckbutton",
-            background=APP_BG,
-            foreground=TEXT_MUTED,
-            font=("Segoe UI", 9),
-            padding=(6, 2),
-            focuscolor=APP_BG,
-        )
-        style.map(
-            "Small.TCheckbutton",
-            background=[("active", APP_BG)],
-            foreground=[("active", TEXT_SECONDARY), ("disabled", TEXT_DISABLED)],
-            focuscolor=[("focus", APP_BG)],
-        )
-        style.configure(
-            "Card.TCheckbutton",
-            background=CARD_BG,
-            foreground=TEXT_SECONDARY,
-            font=("Segoe UI", 9),
-            padding=(6, 2),
-            focuscolor=CARD_BG,
-        )
-        style.map(
-            "Card.TCheckbutton",
-            background=[("active", CARD_BG)],
-            foreground=[("active", TEXT_PRIMARY), ("disabled", TEXT_DISABLED)],
-            focuscolor=[("focus", CARD_BG)],
-        )
+        self.timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self._poll_log_queue, self.timer)
+        self.timer.Start(120)
+
+    def _load_icon(self, filename, size=16):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(base_dir, "icons", filename)
+        if not os.path.isfile(path):
+            return None
+        image = wx.Image(path, wx.BITMAP_TYPE_PNG)
+        if image.IsOk() and size:
+            image = image.Scale(size, size, wx.IMAGE_QUALITY_HIGH)
+        return wx.Bitmap(image) if image.IsOk() else None
+
+    def _init_colors(self):
+        self.app_bg = wx.Colour(*_hex_to_rgb(APP_BG))
+        self.card_bg = wx.Colour(*_hex_to_rgb(CARD_BG))
+        self.text_primary = wx.Colour(*_hex_to_rgb(TEXT_PRIMARY))
+        self.text_secondary = wx.Colour(*_hex_to_rgb(TEXT_SECONDARY))
+        self.text_muted = wx.Colour(*_hex_to_rgb(TEXT_MUTED))
+        self.button_bg = wx.Colour(*_hex_to_rgb(BUTTON_BG))
+        self.button_hover = wx.Colour(*_hex_to_rgb(BUTTON_HOVER))
+        self.button_text = wx.Colour(*_hex_to_rgb(BUTTON_TEXT))
+        self.progress_green = wx.Colour(*_hex_to_rgb(PROGRESS_GREEN))
+        self.progress_green_dark = wx.Colour(*_hex_to_rgb(PROGRESS_GREEN_DARK))
+
+    def _init_fonts(self):
+        self.font_header = wx.Font(18, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName="Bahnschrift")
+        self.font_sub = wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName="Bahnschrift")
+        self.font_banner = wx.Font(11, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName="Bahnschrift")
+        self.font_banner_sub = wx.Font(9, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName="Bahnschrift")
+        self.font_label = wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName="Bahnschrift")
+        self.font_label_bold = wx.Font(11, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName="Bahnschrift")
+        self.font_status = wx.Font(9, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName="Bahnschrift")
+        self.font_button = wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName="Bahnschrift")
 
     def _build_ui(self):
-        root = ttk.Frame(self, padding=20, style="App.TFrame")
-        root.pack(fill="both", expand=True)
+        self.SetBackgroundColour(self.app_bg)
 
-        header = ttk.Frame(root, style="App.TFrame")
-        header.grid(row=0, column=0, sticky="we")
-        header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="KiCad Export Studio", style="Header.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        top_actions = ttk.Frame(header, style="App.TFrame")
-        top_actions.grid(row=0, column=1, sticky="e")
-        self.log_toggle = ttk.Checkbutton(
-            top_actions,
-            text="Show log",
-            variable=self.show_log_var,
-            command=self._toggle_log,
-            style="Small.TCheckbutton",
-        )
-        self.log_toggle.pack(side="right")
-        ttk.Label(
+        root = wx.Panel(self)
+        root.SetBackgroundColour(self.app_bg)
+
+        root_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        header = wx.BoxSizer(wx.HORIZONTAL)
+        title = wx.StaticText(root, label="KiCad Export Studio")
+        title.SetForegroundColour(self.text_primary)
+        title.SetFont(self.font_header)
+        header.Add(title, 1, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+
+        self.show_log_checkbox = wx.CheckBox(root, label="Show log")
+        self.show_log_checkbox.SetForegroundColour(self.text_muted)
+        self.show_log_checkbox.SetValue(False)
+        header.Add(self.show_log_checkbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+
+
+        root_sizer.Add(header, 0, wx.EXPAND | wx.ALL, 6)
+
+        banner = wx.Panel(root)
+        banner.SetBackgroundColour(self.card_bg)
+        banner_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        accent = wx.Panel(banner, size=(6, 36))
+        accent.SetBackgroundColour(self.button_bg)
+        banner_sizer.Add(accent, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 10)
+
+        banner_text = wx.BoxSizer(wx.VERTICAL)
+        banner_title = wx.StaticText(banner, label="Your KiCad export studio - consistent and fast.")
+        banner_title.SetForegroundColour(self.text_primary)
+        banner_title.SetFont(self.font_banner)
+        banner_sub = wx.StaticText(banner, label="Use tabs to switch between image, schematic, and layout exports.")
+        banner_sub.SetForegroundColour(self.text_muted)
+        banner_sub.SetFont(self.font_banner_sub)
+        banner_text.Add(banner_title, 0, wx.BOTTOM, 2)
+        banner_text.Add(banner_sub, 0)
+
+        banner_sizer.Add(banner_text, 1, wx.ALIGN_CENTER_VERTICAL)
+        banner.SetSizer(banner_sizer)
+        root_sizer.Add(banner, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        paths_card = wx.Panel(root)
+        paths_card.SetBackgroundColour(self.card_bg)
+        paths_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        paths_header = wx.StaticText(paths_card, label="Project Paths")
+        paths_header.SetForegroundColour(self.text_primary)
+        paths_header.SetFont(self.font_label_bold)
+        paths_sizer.Add(paths_header, 0, wx.BOTTOM, 10)
+
+        board_label = wx.StaticText(paths_card, label="Project file (.kicad_pro)")
+        board_label.SetForegroundColour(self.text_secondary)
+        board_label.SetFont(self.font_label)
+        paths_sizer.Add(board_label, 0, wx.BOTTOM, 6)
+
+        board_row = wx.BoxSizer(wx.HORIZONTAL)
+        self.project_input = wx.TextCtrl(paths_card)
+        self.project_input.SetBackgroundColour(self.card_bg)
+        self.project_input.SetForegroundColour(self.text_primary)
+        board_row.Add(self.project_input, 1, wx.RIGHT, 8)
+        self.project_browse = wx.Button(paths_card, label="Browse")
+        self.project_browse.SetFont(self.font_button)
+        self.project_browse.SetMinSize((110, -1))
+        self.project_browse.SetMaxSize((110, -1))
+        board_row.Add(self.project_browse, 0)
+        paths_sizer.Add(board_row, 0, wx.EXPAND | wx.BOTTOM, 12)
+
+        output_label = wx.StaticText(paths_card, label="Output folder")
+        output_label.SetForegroundColour(self.text_secondary)
+        output_label.SetFont(self.font_label)
+        paths_sizer.Add(output_label, 0, wx.BOTTOM, 6)
+
+        output_row = wx.BoxSizer(wx.HORIZONTAL)
+        self.output_input = wx.TextCtrl(paths_card)
+        self.output_input.SetBackgroundColour(self.card_bg)
+        self.output_input.SetForegroundColour(self.text_primary)
+        output_row.Add(self.output_input, 1, wx.RIGHT, 8)
+        self.output_browse = wx.Button(paths_card, label="Browse")
+        self.output_browse.SetFont(self.font_button)
+        self.output_browse.SetMinSize((110, -1))
+        self.output_browse.SetMaxSize((110, -1))
+        output_row.Add(self.output_browse, 0)
+        paths_sizer.Add(output_row, 0, wx.EXPAND)
+
+        paths_card.SetSizer(paths_sizer)
+        root_sizer.Add(paths_card, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        notebook = wx.Notebook(root)
+        notebook.SetBackgroundColour(self.app_bg)
+        self.pcb_tab = wx.Panel(notebook)
+        self.pcb_tab.SetBackgroundColour(self.app_bg)
+        self.schematic_tab = wx.Panel(notebook)
+        self.schematic_tab.SetBackgroundColour(self.app_bg)
+        self.layout_tab = wx.Panel(notebook)
+        self.layout_tab.SetBackgroundColour(self.app_bg)
+        notebook.AddPage(self.pcb_tab, "PCB Images Export")
+        notebook.AddPage(self.schematic_tab, "Schematic Export")
+        notebook.AddPage(self.layout_tab, "Layout Export")
+
+        root_sizer.Add(notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 6)
+
+        self.tabs = TabsBuilder(self)
+        self.tabs.build_pcb_tab()
+        self.tabs.build_schematic_tab()
+        self.tabs.build_layout_tab()
+
+        footer = wx.BoxSizer(wx.HORIZONTAL)
+        self.developer_label = wx.StaticText(
             root,
-            text="Render PCB images with a clean, repeatable setup.",
-            style="Sub.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 18))
+            label="Developed by: Darexsh by Daniel Sichler",
+        )
+        self.developer_label.SetForegroundColour(self.text_muted)
+        self.developer_label.SetFont(self.font_status)
+        footer.Add(self.developer_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.developer_github = wx.Button(root, label="GitHub")
+        self.developer_github.SetFont(self.font_button)
+        self.developer_github.SetMinSize((90, -1))
+        self.developer_github.SetMaxSize((90, -1))
+        github_icon = self._load_icon("github.png", size=16)
+        if github_icon:
+            self.developer_github.SetBitmap(github_icon)
+        footer.Add(self.developer_github, 0, wx.ALIGN_CENTER_VERTICAL)
+        self.coffee_button = wx.Button(root, label="Buy me a coffee")
+        self.coffee_button.SetFont(self.font_button)
+        self.coffee_button.SetMinSize((150, -1))
+        self.coffee_button.SetMaxSize((150, -1))
+        coffee_icon = self._load_icon("buy-me-coffee-icon.png", size=16)
+        if coffee_icon:
+            self.coffee_button.SetBitmap(coffee_icon)
+        footer.Add(self.coffee_button, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+        root_sizer.Add(footer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
-        content = ttk.Frame(root, style="App.TFrame")
-        content.grid(row=2, column=0, sticky="nsew")
+        root.SetSizer(root_sizer)
+        self._toggle_log_all(False)
 
-        left = ttk.Frame(content, style="Card.TFrame", padding=16)
-        right = ttk.Frame(content, style="Card.TFrame")
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        right.grid(row=0, column=1, sticky="nsew")
 
-        right_canvas = tk.Canvas(
-            right, background=CARD_BG, highlightthickness=0, bd=0
-        )
-        right_scroll = ttk.Scrollbar(
-            right, orient="vertical", command=right_canvas.yview
-        )
-        right_canvas.configure(yscrollcommand=right_scroll.set)
-        right_canvas.grid(row=0, column=0, sticky="nsew")
-        right_scroll.grid(row=0, column=1, sticky="ns")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
+    def _bind_events(self):
+        self.show_log_checkbox.Bind(wx.EVT_CHECKBOX, self._on_toggle_log)
+        self.project_browse.Bind(wx.EVT_BUTTON, self._browse_project)
+        self.output_browse.Bind(wx.EVT_BUTTON, self._browse_output_folder)
+        self.resolution_combo.Bind(wx.EVT_COMBOBOX, self._apply_resolution)
+        self.render_button.Bind(wx.EVT_BUTTON, self._run_render)
+        self.advanced_toggle.Bind(wx.EVT_CHECKBOX, self._on_toggle_advanced)
+        self.export_schematic_button.Bind(wx.EVT_BUTTON, self._export_schematic)
+        self.export_layout_button.Bind(wx.EVT_BUTTON, self._export_layout)
+        self.change_layers_button.Bind(wx.EVT_BUTTON, self._change_layers)
+        self.developer_github.Bind(wx.EVT_BUTTON, self._open_github)
+        self.coffee_button.Bind(wx.EVT_BUTTON, self._open_coffee)
 
-        right_inner = ttk.Frame(right_canvas, style="Card.TFrame", padding=16)
-        right_window = right_canvas.create_window(
-            (0, 0), window=right_inner, anchor="nw"
-        )
-        right_inner.bind(
-            "<Configure>",
-            lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all")),
-        )
-        right_canvas.bind(
-            "<Configure>",
-            lambda e: right_canvas.itemconfigure(right_window, width=e.width),
-        )
-        bind_mousewheel(self, right_canvas)
+    def _on_toggle_log(self, event):
+        self._toggle_log_all(self.show_log_checkbox.GetValue())
 
-        ttk.Label(left, text="Board + Output", style="HeaderCard.TLabel").grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, 10)
-        )
+    def _open_github(self, _event):
+        wx.LaunchDefaultBrowser("https://github.com/Darexsh")
 
-        ttk.Label(left, text="Board file (.kicad_pcb)", style="Label.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(left, textvariable=self.board_var, width=44).grid(
-            row=2, column=0, sticky="we"
-        )
-        ttk.Button(left, text="Browse", command=self._browse_board).grid(
-            row=2, column=1, sticky="e", padx=(8, 0)
-        )
+    def _open_coffee(self, _event):
+        wx.LaunchDefaultBrowser("https://buymeacoffee.com/darexsh")
 
-        ttk.Label(left, text="Output folder", style="Label.TLabel").grid(
-            row=3, column=0, sticky="w", pady=(14, 6)
-        )
-        ttk.Entry(left, textvariable=self.output_var, width=44).grid(
-            row=4, column=0, sticky="we"
-        )
-        ttk.Button(left, text="Browse", command=self._browse_output_folder).grid(
-            row=4, column=1, sticky="e", padx=(8, 0)
-        )
 
-        self.log_label = ttk.Label(left, text="Log", style="Label.TLabel")
-        self.log_text = scrolledtext.ScrolledText(
-            left,
-            height=8,
-            wrap="word",
-            background=CARD_BG,
-            foreground=TEXT_PRIMARY,
-            insertbackground=TEXT_PRIMARY,
-            relief="flat",
-        )
-        self.log_label.grid(row=5, column=0, sticky="w", pady=(14, 6))
-        self.log_text.grid(row=6, column=0, columnspan=2, sticky="nsew")
-        self.log_text.configure(state="disabled")
-        self.log_label.grid_remove()
-        self.log_text.grid_remove()
+    def _on_toggle_advanced(self, event):
+        self._toggle_advanced(self.advanced_toggle.GetValue())
 
-        # KiCad command path is configured via KICAD_CMD_DEFAULT.
-
-        ttk.Label(right_inner, text="Render Settings", style="HeaderCard.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 10)
-        )
-
-        ttk.Label(right_inner, text="Select resolution", style="Label.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(0, 4)
-        )
-        ttk.Combobox(
-            right_inner,
-            textvariable=self.resolution_var,
-            values=RESOLUTION_OPTIONS,
-            state="readonly",
-        ).grid(row=2, column=0, sticky="we")
-        self.resolution_var.trace_add("write", self._apply_resolution)
-        ttk.Label(right_inner, text="Or", style="CardSub.TLabel").grid(
-            row=3, column=0, sticky="w", pady=(6, 4)
-        )
-        ttk.Label(right_inner, text="Size (px)", style="Label.TLabel").grid(
-            row=4, column=0, sticky="w"
-        )
-        size_frame = ttk.Frame(right_inner, style="Card.TFrame")
-        size_frame.grid(row=5, column=0, sticky="we", pady=(6, 10))
-        size_frame.columnconfigure(0, weight=1)
-        size_frame.columnconfigure(2, weight=1)
-        ttk.Entry(size_frame, textvariable=self.width_var).grid(
-            row=0, column=0, sticky="we"
-        )
-        ttk.Label(size_frame, text="x", style="Label.TLabel").grid(
-            row=0, column=1, padx=6
-        )
-        ttk.Entry(size_frame, textvariable=self.height_var).grid(
-            row=0, column=2, sticky="we"
-        )
-
-        ttk.Label(right_inner, text="Side", style="Label.TLabel").grid(
-            row=6, column=0, sticky="w", pady=(12, 4)
-        )
-        ttk.Combobox(
-            right_inner,
-            textvariable=self.side_var,
-            values=SIDE_OPTIONS,
-            state="readonly",
-        ).grid(row=7, column=0, sticky="we")
-
-        ttk.Label(right_inner, text="Background", style="Label.TLabel").grid(
-            row=8, column=0, sticky="w", pady=(10, 4)
-        )
-        ttk.Combobox(
-            right_inner,
-            textvariable=self.background_var,
-            values=BACKGROUND_OPTIONS,
-            state="readonly",
-        ).grid(row=9, column=0, sticky="we")
-
-        ttk.Label(right_inner, text="Quality", style="Label.TLabel").grid(
-            row=10, column=0, sticky="w", pady=(10, 4)
-        )
-        ttk.Combobox(
-            right_inner,
-            textvariable=self.quality_var,
-            values=QUALITY_OPTIONS,
-            state="readonly",
-        ).grid(row=11, column=0, sticky="we")
-
-        self.advanced_container = ttk.Frame(right_inner, style="Card.TFrame")
-        self.advanced_container.grid(row=12, column=0, sticky="nsew", pady=(14, 0))
-        ttk.Label(self.advanced_container, text="Advanced", style="Label.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 6)
-        )
-
-        ttk.Checkbutton(
-            self.advanced_container,
-            text="Floor (shadows/post)",
-            variable=self.floor_var,
-            style="Card.TCheckbutton",
-        ).grid(row=1, column=0, sticky="w")
-        ttk.Checkbutton(
-            self.advanced_container,
-            text="Perspective",
-            variable=self.perspective_var,
-            style="Card.TCheckbutton",
-        ).grid(row=2, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Preset", style="Label.TLabel").grid(
-            row=3, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Combobox(
-            self.advanced_container,
-            textvariable=self.preset_var,
-            values=PRESET_OPTIONS,
-            state="readonly",
-        ).grid(row=4, column=0, sticky="we", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Zoom", style="Label.TLabel").grid(
-            row=5, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(self.advanced_container, textvariable=self.zoom_var).grid(
-            row=6, column=0, sticky="we", pady=(0, 4)
-        )
-        ttk.Label(
-            self.advanced_container, text="Example: 1", style="Hint.TLabel"
-        ).grid(row=7, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Pan (X,Y,Z)", style="Label.TLabel").grid(
-            row=8, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(self.advanced_container, textvariable=self.pan_var).grid(
-            row=9, column=0, sticky="we", pady=(0, 4)
-        )
-        ttk.Label(
-            self.advanced_container, text="Example: 3,0,0", style="Hint.TLabel"
-        ).grid(row=10, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Pivot (X,Y,Z)", style="Label.TLabel").grid(
-            row=11, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(self.advanced_container, textvariable=self.pivot_var).grid(
-            row=12, column=0, sticky="we", pady=(0, 4)
-        )
-        ttk.Label(
-            self.advanced_container, text="Example: -10,2,0", style="Hint.TLabel"
-        ).grid(row=13, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Rotate (X,Y,Z)", style="Label.TLabel").grid(
-            row=14, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(self.advanced_container, textvariable=self.rotate_var).grid(
-            row=15, column=0, sticky="we", pady=(0, 4)
-        )
-        ttk.Label(
-            self.advanced_container, text="Example: -45,0,45", style="Hint.TLabel"
-        ).grid(row=16, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Light top (Single number or R,G,B)", style="Label.TLabel").grid(
-            row=17, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(self.advanced_container, textvariable=self.light_top_var).grid(
-            row=18, column=0, sticky="we", pady=(0, 4)
-        )
-        ttk.Label(
-            self.advanced_container,
-            text="Example: 0.8 or 0.8,0.8,0.8",
-            style="Hint.TLabel",
-        ).grid(row=19, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Light bottom (Single number or R,G,B)", style="Label.TLabel").grid(
-            row=20, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(self.advanced_container, textvariable=self.light_bottom_var).grid(
-            row=21, column=0, sticky="we", pady=(0, 4)
-        )
-        ttk.Label(
-            self.advanced_container,
-            text="Example: 0.3 or 0.3,0.3,0.3",
-            style="Hint.TLabel",
-        ).grid(row=22, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Light side (Single number or R,G,B)", style="Label.TLabel").grid(
-            row=23, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(self.advanced_container, textvariable=self.light_side_var).grid(
-            row=24, column=0, sticky="we", pady=(0, 4)
-        )
-        ttk.Label(
-            self.advanced_container,
-            text="Example: 0.5 or 0.5,0.5,0.5",
-            style="Hint.TLabel",
-        ).grid(row=25, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(self.advanced_container, text="Light camera (Single number or R,G,B)", style="Label.TLabel").grid(
-            row=26, column=0, sticky="w", pady=(0, 6)
-        )
-        ttk.Entry(self.advanced_container, textvariable=self.light_camera_var).grid(
-            row=27, column=0, sticky="we", pady=(0, 4)
-        )
-        ttk.Label(
-            self.advanced_container,
-            text="Example: 0.2 or 0.2,0.2,0.2",
-            style="Hint.TLabel",
-        ).grid(row=28, column=0, sticky="w", pady=(0, 10))
-
-        ttk.Label(
-            self.advanced_container, text="Light side elevation", style="Label.TLabel"
-        ).grid(row=29, column=0, sticky="w", pady=(0, 6))
-        ttk.Entry(
-            self.advanced_container, textvariable=self.light_side_elevation_var
-        ).grid(row=30, column=0, sticky="we", pady=(0, 4))
-        ttk.Label(
-            self.advanced_container, text="Example: 45", style="Hint.TLabel"
-        ).grid(row=31, column=0, sticky="w", pady=(0, 2))
-
-        self.advanced_container.columnconfigure(0, weight=1)
-        self.advanced_container.grid_remove()
-
-        # Log is shown in the Board + Output panel.
-
-        actions = ttk.Frame(root, style="App.TFrame")
-        actions.grid(row=3, column=0, sticky="we", pady=(18, 0))
-        self.progress = ttk.Progressbar(
-            actions, mode="determinate", length=480, style="Green.Horizontal.TProgressbar"
-        )
-        self.progress.pack(side="left", padx=(0, 10))
-        ttk.Label(actions, textvariable=self.status_var, style="Status.TLabel").pack(
-            side="left"
-        )
-        self.render_button = ttk.Button(
-            actions,
-            text="Render Image",
-            style="Primary.TButton",
-            command=self._run_render,
-        )
-        self.render_button.pack(side="right")
-        self.advanced_toggle = ttk.Checkbutton(
-            actions,
-            text="Advanced",
-            variable=self.show_advanced_var,
-            command=self._toggle_advanced,
-            style="Small.TCheckbutton",
-        )
-        self.advanced_toggle.pack(side="right", padx=(0, 10))
-
-        root.columnconfigure(0, weight=1)
-        root.rowconfigure(2, weight=1)
-        content.columnconfigure(0, weight=3, uniform="content")
-        content.columnconfigure(1, weight=2, uniform="content")
-        content.rowconfigure(0, weight=1)
-        left.columnconfigure(0, weight=1)
-        left.rowconfigure(6, weight=1)
-        right_inner.columnconfigure(0, weight=1)
-        right_inner.rowconfigure(12, weight=1)
-
-    def _toggle_log(self):
-        if self.show_log_var.get():
-            self.log_label.grid()
-            self.log_text.grid()
+    def _toggle_log_all(self, show):
+        self.log_card_pcb.Show(show)
+        if show:
+            self.log_card_sch.Show(True)
+            self.log_card_layout.Show(True)
+            self.log_spacer_sch.Show(False)
+            self.log_spacer_layout.Show(False)
         else:
-            self.log_label.grid_remove()
-            self.log_text.grid_remove()
-
-    def _toggle_advanced(self):
-        if self.show_advanced_var.get():
-            self.advanced_container.grid()
+            self.log_card_sch.Show(False)
+            self.log_card_layout.Show(False)
+            self.log_spacer_sch.Show(True)
+            self.log_spacer_layout.Show(True)
+        if show:
+            self.pcb_left_panel.Show(True)
+            self.pcb_left_item.SetProportion(3)
+            self.pcb_right_item.SetProportion(2)
         else:
-            self.advanced_container.grid_remove()
+            self.pcb_left_panel.Show(False)
+            self.pcb_left_item.SetProportion(0)
+            self.pcb_right_item.SetProportion(1)
+        self.pcb_tab.Layout()
+        self.schematic_tab.Layout()
+        self.layout_tab.Layout()
 
-    def _browse_board(self):
-        path = filedialog.askopenfilename(
-            title="Select KiCad board file",
-            filetypes=[("KiCad PCB", "*.kicad_pcb"), ("All files", "*")],
-        )
-        if path:
-            self.board_var.set(path)
+    def _toggle_advanced(self, show):
+        self.advanced_container.Show(show)
+        self.pcb_tab.Layout()
 
-    def _browse_output_folder(self):
-        path = filedialog.askdirectory(title="Select output folder")
-        if path:
-            self.output_var.set(path)
+    def _browse_project(self, _event):
+        with wx.FileDialog(
+            self,
+            "Select KiCad project file",
+            wildcard="KiCad Project (*.kicad_pro)|*.kicad_pro|All files (*.*)|*.*",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        ) as dialog:
+            if dialog.ShowModal() == wx.ID_OK:
+                self.project_input.SetValue(dialog.GetPath())
+                self._update_detected_layers()
 
-    def _apply_resolution(self, *_):
-        value = self.resolution_var.get()
+    def _browse_output_folder(self, _event):
+        with wx.DirDialog(self, "Select output folder", style=wx.DD_DEFAULT_STYLE) as dialog:
+            if dialog.ShowModal() == wx.ID_OK:
+                self.output_input.SetValue(dialog.GetPath())
+
+    def _apply_resolution(self, _event):
+        value = self.resolution_combo.GetValue()
         if not value:
             return
         size = RESOLUTION_MAP.get(value)
         if size:
-            self.width_var.set(str(size[0]))
-            self.height_var.set(str(size[1]))
+            self.width_input.SetValue(str(size[0]))
+            self.height_input.SetValue(str(size[1]))
 
     def _append_log(self, text):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", text)
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+        for log in (self.log_text_pcb, self.log_text_sch, self.log_text_layout):
+            log.AppendText(text)
+            log.ShowPosition(log.GetLastPosition())
+
+    def _detect_layers_from_pcb(self, pcb_path):
+        if not os.path.isfile(pcb_path):
+            return []
+        try:
+            with open(pcb_path, "r", encoding="utf-8", errors="ignore") as handle:
+                pcb_text = handle.read()
+        except OSError:
+            return []
+        known_layers = [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "B.Cu",
+            "F.SilkS",
+            "B.SilkS",
+            "F.Silkscreen",
+            "B.Silkscreen",
+            "F.Mask",
+            "B.Mask",
+            "Edge.Cuts",
+        ]
+        detected = [layer for layer in known_layers if layer in pcb_text]
+        internal_found = sorted(
+            set(re.findall(r"\bIn\d+\.Cu\b", pcb_text)),
+            key=lambda x: int(re.findall(r"\d+", x)[0]),
+        )
+        for layer in internal_found:
+            if layer not in detected:
+                detected.append(layer)
+        normalized = []
+        for layer in detected:
+            normalized.append(self.layer_aliases.get(layer, layer))
+        return normalized
+
+    def _update_detected_layers(self):
+        _project, pcb_path, _sch = self._derive_paths_from_project()
+        detected = self._detect_layers_from_pcb(pcb_path)
+        self.detected_layers = detected
+        seen = set()
+        deduped = []
+        for layer in detected:
+            if layer not in seen:
+                seen.add(layer)
+                deduped.append(layer)
+        self.selected_layers = deduped
+        self.layers_value.SetLabel(", ".join(self.selected_layers) if self.selected_layers else "None")
+
+    def _change_layers(self, _event):
+        if not self.detected_layers:
+            self._update_detected_layers()
+        if not self.detected_layers:
+            wx.MessageBox("No layers detected yet. Choose a project file first.", "Layout Export", wx.ICON_WARNING)
+            return
+        choices = []
+        internal_layers = [layer for layer in self.detected_layers if re.match(r"^In\d+\.Cu$", layer)]
+        internal_layers.sort(key=lambda x: int(re.findall(r"\d+", x)[0]))
+        for layer in self.layer_order:
+            if layer == "B.Cu" and internal_layers:
+                for internal in internal_layers:
+                    if internal not in choices:
+                        choices.append(internal)
+            if layer not in choices:
+                choices.append(layer)
+        for layer in self.detected_layers:
+            if layer not in choices:
+                choices.append(layer)
+        preselect = [choices.index(layer) for layer in self.selected_layers if layer in choices]
+        dialog = wx.MultiChoiceDialog(
+            self,
+            "Select layers to export",
+            "Layout Layers",
+            choices,
+        )
+        dialog.SetExtraStyle(wx.WS_EX_VALIDATE_RECURSIVELY)
+        dialog_sizer = dialog.GetSizer()
+        if dialog_sizer:
+            dialog.Layout()
+        def _select_all(_evt):
+            dialog.SetSelections(list(range(len(choices))))
+        def _clear_all(_evt):
+            dialog.SetSelections([])
+        def _show_context_menu(evt):
+            menu = wx.Menu()
+            select_id = wx.NewIdRef()
+            clear_id = wx.NewIdRef()
+            menu.Append(select_id, "Select all")
+            menu.Append(clear_id, "Clear all")
+            dialog.Bind(wx.EVT_MENU, _select_all, id=select_id)
+            dialog.Bind(wx.EVT_MENU, _clear_all, id=clear_id)
+            dialog.PopupMenu(menu)
+            menu.Destroy()
+        listbox = None
+        for child in dialog.GetChildren():
+            if isinstance(child, wx.ListBox):
+                listbox = child
+                break
+        target = listbox or dialog
+        target.Bind(wx.EVT_CONTEXT_MENU, _show_context_menu)
+        if preselect:
+            dialog.SetSelections(preselect)
+        if dialog.ShowModal() == wx.ID_OK:
+            selections = dialog.GetSelections()
+            self.selected_layers = [choices[i] for i in selections]
+            if self.selected_layers:
+                self.layers_value.SetLabel(", ".join(self.selected_layers))
+            else:
+                self.layers_value.SetLabel("None")
+        dialog.Destroy()
+
+    def _derive_paths_from_project(self):
+        project_path = self.project_input.GetValue().strip()
+        if not project_path:
+            return "", "", ""
+        project_dir = os.path.dirname(project_path)
+        project_name = os.path.splitext(os.path.basename(project_path))[0]
+        pcb_path = os.path.join(project_dir, f"{project_name}.kicad_pcb")
+        sch_path = os.path.join(project_dir, f"{project_name}.kicad_sch")
+        return project_path, pcb_path, sch_path
+
+    def _wrap_kicad_cmd(self, cmd):
+        if os.name == "nt":
+            kicad_cmd = KICAD_CMD_DEFAULT.strip()
+            if not kicad_cmd:
+                return cmd
+            return build_cmd_exe_command(kicad_cmd, cmd)
+        return cmd
 
     def _collect_render_options(self, board, width, height):
         return {
@@ -587,24 +509,42 @@ class KiCadExportGUI(tk.Tk):
             "output": "",
             "width": width,
             "height": height,
-            "side": self.side_var.get(),
-            "background": self.background_var.get(),
-            "quality": self.quality_var.get(),
-            "preset": self.preset_var.get().strip(),
-            "floor": self.floor_var.get(),
-            "perspective": self.perspective_var.get(),
-            "zoom": self.zoom_var.get().strip(),
-            "pan": self.pan_var.get().strip(),
-            "pivot": self.pivot_var.get().strip(),
-            "rotate": self.rotate_var.get().strip(),
-            "light_top": self.light_top_var.get().strip(),
-            "light_bottom": self.light_bottom_var.get().strip(),
-            "light_side": self.light_side_var.get().strip(),
-            "light_camera": self.light_camera_var.get().strip(),
-            "light_side_elevation": self.light_side_elevation_var.get().strip(),
+            "side": self.side_combo.GetValue(),
+            "background": self.background_combo.GetValue(),
+            "quality": self.quality_combo.GetValue(),
+            "preset": self.preset_combo.GetValue().strip(),
+            "floor": self.floor_check.GetValue(),
+            "perspective": self.perspective_check.GetValue(),
+            "zoom": self.zoom_input.GetValue().strip(),
+            "pan": self.pan_input.GetValue().strip(),
+            "pivot": self.pivot_input.GetValue().strip(),
+            "rotate": self.rotate_input.GetValue().strip(),
+            "light_top": self.light_top_input.GetValue().strip(),
+            "light_bottom": self.light_bottom_input.GetValue().strip(),
+            "light_side": self.light_side_input.GetValue().strip(),
+            "light_camera": self.light_camera_input.GetValue().strip(),
+            "light_side_elevation": self.light_side_elevation_input.GetValue().strip(),
         }
 
-    def _poll_log_queue(self):
+    def _start_command_run(self, full_cmds, status_text, action_label):
+        for log in (self.log_text_pcb, self.log_text_sch, self.log_text_layout):
+            log.SetValue("")
+        for label in (self.status_label_pcb, self.status_label_sch, self.status_label_layout):
+            label.SetLabel(status_text)
+        self.current_action_label = action_label
+        self.render_in_progress = True
+        self.render_button.Enable(False)
+        self.export_schematic_button.Enable(False)
+        self.export_layout_button.Enable(False)
+        self.progress_pcb.SetValue(0)
+        self.progress_sch.SetValue(0)
+        self.progress_layout.SetValue(0)
+
+        thread = threading.Thread(target=self._run_command_worker, args=(full_cmds,))
+        thread.daemon = True
+        thread.start()
+
+    def _poll_log_queue(self, _event):
         while True:
             try:
                 event = self.log_queue.get_nowait()
@@ -613,41 +553,51 @@ class KiCadExportGUI(tk.Tk):
             if event[0] == "line":
                 self._append_log(event[1])
             elif event[0] == "progress":
-                self.progress["value"] = min(event[1], self.progress["maximum"])
+                value = min(int(event[1]), 100)
+                self.progress_pcb.SetValue(value)
+                self.progress_sch.SetValue(value)
+                self.progress_layout.SetValue(value)
             elif event[0] == "done":
                 self.render_in_progress = False
-                self.render_button.configure(state="normal")
+                self.render_button.Enable(True)
+                self.export_schematic_button.Enable(True)
+                self.export_layout_button.Enable(True)
                 if event[1]:
-                    self.status_var.set("Render complete.")
+                    message = f"{self.current_action_label} complete."
                 else:
-                    self.status_var.set("Render failed.")
-        self.after(120, self._poll_log_queue)
+                    message = f"{self.current_action_label} failed."
+                self.status_label_pcb.SetLabel(message)
+                self.status_label_sch.SetLabel(message)
+                self.status_label_layout.SetLabel(message)
+                wx.CallLater(5000, self._reset_progress_if_idle)
 
-    def _run_render(self):
+    def _reset_progress_if_idle(self):
+        if self.render_in_progress:
+            return
+        self.progress_pcb.SetValue(0)
+        self.progress_sch.SetValue(0)
+        self.progress_layout.SetValue(0)
+
+    def _run_render(self, _event):
         if self.render_in_progress:
             return
         try:
-            width = int(self.width_var.get())
-            height = int(self.height_var.get())
+            width = int(self.width_input.GetValue())
+            height = int(self.height_input.GetValue())
         except ValueError:
-            messagebox.showerror("KiCad Render", "Width and height must be integers.")
+            wx.MessageBox("Width and height must be integers.", "KiCad Render", wx.ICON_ERROR)
             return
 
-        board = self.board_var.get().strip()
-        output_dir = self.output_var.get().strip()
-        kicad_cmd = KICAD_CMD_DEFAULT.strip()
-
-        if not board:
-            messagebox.showerror("KiCad Render", "Please choose a board file.")
+        project_path, board, _sch = self._derive_paths_from_project()
+        output_dir = self.output_input.GetValue().strip()
+        if not project_path:
+            wx.MessageBox("Please choose a project file.", "KiCad Render", wx.ICON_ERROR)
             return
         if not output_dir:
-            messagebox.showerror("KiCad Render", "Please choose an output folder.")
+            wx.MessageBox("Please choose an output folder.", "KiCad Render", wx.ICON_ERROR)
             return
-        if not kicad_cmd:
-            messagebox.showerror(
-                "KiCad Render",
-                "KiCad command not configured. Update KICAD_CMD_DEFAULT in the script.",
-            )
+        if not os.path.isfile(board):
+            wx.MessageBox("Matching .kicad_pcb not found for this project.", "KiCad Render", wx.ICON_ERROR)
             return
 
         os.makedirs(output_dir, exist_ok=True)
@@ -670,20 +620,157 @@ class KiCadExportGUI(tk.Tk):
                 )
             ]
 
-        full_cmds = [build_cmd_exe_command(kicad_cmd, cmd) for cmd in kicad_cli_cmd_list]
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
-        self.status_var.set("Rendering...")
+        full_cmds = [self._wrap_kicad_cmd(cmd) for cmd in kicad_cli_cmd_list]
+        self._start_command_run(full_cmds, "Rendering...", "Render")
+
+    def _export_schematic(self, _event):
+        if self.render_in_progress:
+            return
+        project_path, _board, schematic = self._derive_paths_from_project()
+        output_dir = self.output_input.GetValue().strip()
+        if not project_path:
+            wx.MessageBox("Please choose a project file.", "Schematic Export", wx.ICON_ERROR)
+            return
+        if not output_dir:
+            wx.MessageBox("Please choose an output folder.", "Schematic Export", wx.ICON_ERROR)
+            return
+        if not os.path.isfile(schematic):
+            wx.MessageBox("Matching .kicad_sch not found for this project.", "Schematic Export", wx.ICON_ERROR)
+            return
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "Project_schematics.pdf")
+        cmd = subprocess.list2cmdline(
+            ["kicad-cli", "sch", "export", "pdf", "--output", output_path, schematic]
+        )
+        self._start_command_run([self._wrap_kicad_cmd(cmd)], "Exporting schematics...", "Schematic export")
+
+    def _export_layout(self, _event):
+        if self.render_in_progress:
+            return
+        project_path, board, _sch = self._derive_paths_from_project()
+        output_dir = self.output_input.GetValue().strip()
+        if not project_path:
+            wx.MessageBox("Please choose a project file.", "Layout Export", wx.ICON_ERROR)
+            return
+        if not output_dir:
+            wx.MessageBox("Please choose an output folder.", "Layout Export", wx.ICON_ERROR)
+            return
+        if not os.path.isfile(board):
+            wx.MessageBox("Matching .kicad_pcb not found for this project.", "Layout Export", wx.ICON_ERROR)
+            return
+        if shutil.which("pdfunite") is None:
+            wx.MessageBox("pdfunite not found. Install poppler-utils.", "Layout Export", wx.ICON_ERROR)
+            return
+
+        layers = [self.layer_aliases_reverse.get(layer, layer) for layer in self.selected_layers]
+        deduped = []
+        seen = set()
+        for layer in layers:
+            if layer not in seen:
+                seen.add(layer)
+                deduped.append(layer)
+        layers = deduped
+        if not layers:
+            wx.MessageBox("Please select at least one layer.", "Layout Export", wx.ICON_ERROR)
+            return
+        os.makedirs(output_dir, exist_ok=True)
+        temp_dir = os.path.join(output_dir, "temp_layers")
+        os.makedirs(temp_dir, exist_ok=True)
+        output_pdf = os.path.join(output_dir, "Project_board_layers.pdf")
+
+        def worker():
+            creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            try:
+                with open(board, "r", encoding="utf-8", errors="ignore") as handle:
+                    pcb_text = handle.read()
+                exports = []
+                for layer in layers:
+                    if layer not in pcb_text:
+                        self.log_queue.put(("line", f"[WARN] Layer {layer} not found; skipping.\n"))
+                        continue
+                    out_file = os.path.join(temp_dir, f"board_{layer.replace('.', '_')}.pdf")
+                    cmd = subprocess.list2cmdline(
+                        [
+                            "kicad-cli",
+                            "pcb",
+                            "export",
+                            "pdf",
+                            "--output",
+                            out_file,
+                            "--layers",
+                            layer,
+                            board,
+                        ]
+                    )
+                    full_cmd = self._wrap_kicad_cmd(cmd)
+                    self.log_queue.put(("line", f"$ {full_cmd}\n"))
+                    proc = subprocess.Popen(
+                        full_cmd,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        creationflags=creationflags,
+                    )
+                    if proc.stdout:
+                        for line in proc.stdout:
+                            self.log_queue.put(("line", line))
+                    if proc.wait() != 0:
+                        self.log_queue.put(("line", "[ERR] Layer export failed.\n"))
+                        self.log_queue.put(("done", False))
+                        return
+                    exports.append(out_file)
+                    self.log_queue.put(("progress", (len(exports) / max(len(layers), 1)) * 80))
+
+                if not exports:
+                    self.log_queue.put(("line", "[ERR] No layers found to export.\n"))
+                    self.log_queue.put(("done", False))
+                    return
+
+                combine_cmd = subprocess.list2cmdline(["pdfunite", *exports, output_pdf])
+                self.log_queue.put(("line", f"$ {combine_cmd}\n"))
+                proc = subprocess.Popen(
+                    combine_cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    creationflags=creationflags,
+                )
+                if proc.stdout:
+                    for line in proc.stdout:
+                        self.log_queue.put(("line", line))
+                if proc.wait() != 0:
+                    self.log_queue.put(("line", "[ERR] PDF combine failed (pdfunite).\n"))
+                    self.log_queue.put(("done", False))
+                    return
+                self.log_queue.put(("progress", 100))
+                self.log_queue.put(("done", True))
+            finally:
+                try:
+                    for file_name in os.listdir(temp_dir):
+                        os.remove(os.path.join(temp_dir, file_name))
+                    os.rmdir(temp_dir)
+                except OSError:
+                    pass
+
+        for log in (self.log_text_pcb, self.log_text_sch, self.log_text_layout):
+            log.SetValue("")
+        for label in (self.status_label_pcb, self.status_label_sch, self.status_label_layout):
+            label.SetLabel("Exporting layout PDFs...")
+        self.current_action_label = "Layout export"
         self.render_in_progress = True
-        self.render_button.configure(state="disabled")
-        self.progress["maximum"] = 100
-        self.progress["value"] = 0
-        thread = threading.Thread(target=self._run_render_worker, args=(full_cmds,))
+        self.render_button.Enable(False)
+        self.export_schematic_button.Enable(False)
+        self.export_layout_button.Enable(False)
+        self.progress_pcb.SetValue(0)
+        self.progress_sch.SetValue(0)
+        self.progress_layout.SetValue(0)
+        thread = threading.Thread(target=worker)
         thread.daemon = True
         thread.start()
 
-    def _run_render_worker(self, full_cmds):
+    def _run_command_worker(self, full_cmds):
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         success = True
         progress_re = re.compile(r"Rendering:\s*(\d+)\s*%")
@@ -722,6 +809,14 @@ class KiCadExportGUI(tk.Tk):
 
         self.log_queue.put(("done", success))
 
+
+class KiCadExportApp(wx.App):
+    def OnInit(self):
+        frame = KiCadExportFrame()
+        frame.Show()
+        return True
+
+
 if __name__ == "__main__":
-    app = KiCadExportGUI()
-    app.mainloop()
+    app = KiCadExportApp()
+    app.MainLoop()
