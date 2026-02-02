@@ -8,7 +8,7 @@
 **A desktop GUI for exporting KiCad PCB images, schematics, and layout PDFs via `kicad-cli` with repeatable settings**  
 🖼️🧩⚙️
 
-![Projekt-Status](https://img.shields.io/badge/Status-Aktiv-brightgreen) ![License](https://img.shields.io/badge/License-NonCommercial-blue) ![Version](https://img.shields.io/badge/Version-1.0-orange) [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/darexsh)
+![Projekt-Status](https://img.shields.io/badge/Status-Aktiv-brightgreen) ![License](https://img.shields.io/badge/License-NonCommercial-blue) ![Version](https://img.shields.io/badge/Version-1.1-orange) [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/darexsh)
 
 </div>
 
@@ -25,9 +25,39 @@
 * * *
 
 🚀 About the Project
---------------------
+==============
 
 A lightweight GUI for **KiCad 9+** that exports consistent outputs without retyping long CLI commands. Select a `.kicad_pro`, choose render options, export PCB images, schematic PDFs, and combined layout layer PDFs.
+
+* * *
+
+✨ Features
+-----------
+
+* **Project-based workflow:** select a `.kicad_pro` and auto-detect related files
+    
+* **PCB Images Export:** render sides (top/bottom/left/right/front/back), backgrounds, quality, advanced camera + lighting
+    
+* **Schematic Export:** one-click schematic PDF export
+    
+* **Layout Export:** export PCB layer PDFs and combine into one document (via `pdfunite`)
+    
+* **Layer selection:** change which layers are exported and combined
+    
+* **Progress + log output** during exports
+
+* * *
+
+📸 Screenshots
+--------------
+
+<table>
+  <tr>
+    <td align="center"><b>PCB Images Export</b><br><img src="Screenshots/pcb-images-export.png"></td>
+    <td align="center"><b>Schematic Export</b><br><img src="Screenshots/schematic-export.png"></td>
+    <td align="center"><b>Layout Export</b><br><img src="Screenshots/layout-export.png"></td>
+  </tr>
+</table>
 
 * * *
 
@@ -79,23 +109,6 @@ python kicad_export_gui.py
         
     * Use the tabs to export PCB images, schematics, and layout PDFs
         
-
-* * *
-
-⚙️ Features
------------
-
-* **Project-based workflow:** select a `.kicad_pro` and auto-detect related files
-    
-* **PCB Images Export:** render sides (top/bottom/left/right/front/back), backgrounds, quality, advanced camera + lighting
-    
-* **Schematic Export:** one-click schematic PDF export
-    
-* **Layout Export:** export PCB layer PDFs and combine into one document (via `pdfunite`)
-    
-* **Layer selection:** change which layers are exported and combined
-    
-* **Progress + log output** during exports
 
 * * *
 
